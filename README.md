@@ -34,7 +34,8 @@ python export_pgn.py --search "Carlsen%"
 # 2. export all games of one player
 python export_pgn.py "Carlsen, Magnus" -o carlsen.pgn
 
-# 3. several spellings of the same player (--name and --id are repeatable)
+# 3. several spellings of the same player (--name and --id are repeatable, --ids takes a list)
+python export_pgn.py --ids 73583,2876 -o carlsen_all.pgn
 python export_pgn.py --name "Carlsen, Magnus" --name "Carlsen, M" -o carlsen_all.pgn
 
 # 4. union them into one identity: "Carlsen, M" is written as "Carlsen, Magnus"
@@ -58,6 +59,7 @@ python export_pgn.py --search "Carlsen, Ma%" --color white --min-moves 20 --from
 |---|---|
 | `NAME` / `--name NAME` | exact player name as stored; repeatable |
 | `--id ID` | player ID shown by `--search`; repeatable |
+| `--ids ID,ID,...` | comma-separated player IDs, e.g. `--ids 73583,2876`; can be mixed with `--id`/`--name` (order is kept, first one names a `--merge`) |
 | `--merge` | write all selected identities under the first given name/ID |
 | `--merge-as NAME` | write all selected identities under `NAME` |
 | `--color white\|black` | only games played with that color |

@@ -5,6 +5,7 @@ Examples:
     python export_pgn.py "Carlsen, Magnus" -o carlsen.pgn
     python export_pgn.py "Carlsen, Magnus" --color white --from 2020.01.01 -o carlsen_white.pgn
     python export_pgn.py --id 12345 --id 67890 -o player.pgn
+    python export_pgn.py --ids 73583,2876 --merge -o carlsen.pgn
     python export_pgn.py "Carlsen, Magnus" --min-moves 20 -o carlsen_20plus.pgn
     python export_pgn.py "Carlsen, Magnus" --max-moves 25 -o carlsen_miniatures.pgn
     python export_pgn.py --search "Carlsen%" --min-moves 20   # counts honour the filters
@@ -21,11 +22,25 @@ import sys
 import caissabase as cb
 
 
+def id_list(value: str) -> list[int]:
+    """Parse a comma-separated list of player IDs, e.g. "73583,2876"."""
+    try:
+        ids = [int(part) for part in value.split(",") if part.strip()]
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"expected comma-separated integers, got {value!r}")
+    if not ids:
+        raise argparse.ArgumentTypeError("no IDs given")
+    return ids
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("names", nargs="*", metavar="NAME", help='exact player name as stored, e.g. "Carlsen, Magnus"')
     ap.add_argument("--name", action="append", default=[], help="exact player name (repeatable)")
-    ap.add_argument("--id", type=int, action="append", default=[], help="player ID (repeatable)")
+    # --id and --ids share one list, so mixed usage keeps the order given on the command line.
+    ap.add_argument("--id", dest="ids", type=int, action="append", default=[], help="player ID (repeatable)")
+    ap.add_argument("--ids", dest="ids", type=id_list, action="extend", metavar="ID,ID,...",
+                    help="comma-separated player IDs, e.g. 73583,2876 (repeatable)")
     ap.add_argument("--merge", action="store_true",
                     help="report all selected identities under the first given name/ID")
     ap.add_argument("--merge-as", metavar="NAME",
@@ -61,16 +76,20 @@ def main() -> int:
         for name in missing:
             print(f"Player not found: {name!r}. Try --search.", file=sys.stderr)
         return 1
-    for pid in args.id:
+    for pid in args.ids:
         row = con.execute("SELECT Name FROM Players WHERE ID = ?", (pid,)).fetchone()
         if row is None:
             print(f"Player ID not found: {pid}", file=sys.stderr)
             return 1
         players.append(cb.Player(pid, row["Name"]))
     if not players:
-        ap.error("give a player name, --name, --id or --search")
+        ap.error("give a player name, --name, --id, --ids or --search")
 
-    ids = list(dict.fromkeys(p.id for p in players))
+    unique: dict[int, cb.Player] = {}
+    for p in players:  # drop duplicates, keeping the first occurrence (it decides the --merge name)
+        unique.setdefault(p.id, p)
+    players = list(unique.values())
+    ids = [p.id for p in players]
     rename = None
     if args.merge or args.merge_as:
         canonical = args.merge_as or players[0].name

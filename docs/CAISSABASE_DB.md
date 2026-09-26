@@ -255,7 +255,8 @@ python export_pgn.py --search "Carlsen%"
 # 2. export by exact name
 python export_pgn.py "Carlsen, Magnus" -o carlsen.pgn
 
-# 3. several spellings of the same player (--name is repeatable; --id works too)
+# 3. several spellings of the same player (--name/--id are repeatable, --ids takes a list)
+python export_pgn.py --ids 73583,2876 -o carlsen_all.pgn
 python export_pgn.py --name "Carlsen, Magnus" --name "Carlsen, M" -o carlsen_all.pgn
 
 # 4. ...and union them into one identity: every "Carlsen, M" in the White/Black
@@ -266,7 +267,7 @@ python export_pgn.py --name "Carlsen, Magnus" --name "Carlsen, M" --merge -o car
 python export_pgn.py --name "Carlsen, M" --id 73583 --merge-as "Magnus Carlsen" -o carlsen_all.pgn
 
 # filters: color and date range
-python export_pgn.py --id 73583 --id 2876 --color white --from 2020.01.01 -o carlsen_white.pgn
+python export_pgn.py --ids 73583,2876 --color white --from 2020.01.01 -o carlsen_white.pgn
 python export_pgn.py "Kasparov, Garry" --from 1985.01.01 --to 1990.12.31 -o kasparov_85_90.pgn
 
 # game length in full moves: 20+ moves, at most 25 moves, or a range
@@ -282,6 +283,7 @@ python export_pgn.py --search "Carlsen%" --min-moves 20
 |---|---|
 | `NAME` (positional) / `--name NAME` | exact player name; both may be repeated and combined |
 | `--id ID` | player ID (repeatable), as printed by `--search` |
+| `--ids ID,ID,...` | comma-separated player IDs (repeatable). Mixes with `--id`/`--name`; command-line order is kept and duplicates are dropped. The first player names a `--merge` |
 | `--merge` | report all selected identities under the first given name/ID |
 | `--merge-as NAME` | report all selected identities under `NAME` (implies `--merge`) |
 | `--color white\|black` | only games with that color (for any of the selected identities) |
