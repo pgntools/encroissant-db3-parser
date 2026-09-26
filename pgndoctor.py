@@ -11,6 +11,9 @@ Duplicates come in two kinds:
             swapped order), but the same players, year and result, and mostly
             the same positions (position-set similarity >= --similarity).
 
+Every duplicate is listed as a table comparing it with the kept game: headers,
+lengths, the moves that differ, and conflicts such as different results.
+
 Usage:
     venv/bin/python pgndoctor.py -f games.pgn                     # summary (= --info)
     venv/bin/python pgndoctor.py -f games.pgn --info --json       # summary as JSON
@@ -24,6 +27,7 @@ input file. The first copy of each duplicate group is kept.
 from __future__ import annotations
 
 import argparse
+import difflib
 import hashlib
 import io
 import json
@@ -54,6 +58,19 @@ PROBABLE_MIN_PLIES = 20
 DEFAULT_LIST = 20
 PROGRESS_EVERY = 5000
 
+# Headers compared between a duplicate and the kept game. The seven-tag roster
+# is always shown in the comparison table, the others only if either game has them.
+COMPARE_TAGS = ("Date", "Event", "Site", "Round", "White", "Black", "Result", "WhiteElo", "BlackElo", "ECO")
+ROSTER = COMPARE_TAGS[:7]
+
+MAX_MOVE_DIFFS = 4    # differing move blocks shown per table (JSON has all)
+CELL_WIDTH = 40       # table cells are cut to this many characters
+
+CONFLICTS = {
+    "result": "results differ: one copy has a wrong result",
+    "colors": "White and Black are swapped: one copy has the colors wrong",
+}
+
 
 class _RecordingReader:
     """Wraps a text stream and records the lines read_game() consumes.
@@ -77,24 +94,55 @@ class _RecordingReader:
         return text
 
 
+def _encode_move(move: chess.Move) -> int:
+    """A move in 15 bits (from, to, promotion piece), for compact storage in array('H')."""
+    return move.from_square | move.to_square << 6 | (move.promotion or 0) << 12
+
+
+def _decode_move(value: int) -> chess.Move:
+    return chess.Move(value & 63, value >> 6 & 63, value >> 12 or None)
+
+
+@dataclass(slots=True)
+class GameRef:
+    """What is remembered of a game to compare later games with.
+
+    Kept for every game, so it is compact: the compared headers and 2 bytes per move.
+    """
+    index: int
+    tags: tuple[str, ...]            # values of COMPARE_TAGS, "" if missing
+    start_fen: str
+    moves: array                     # array('H') of _encode_move() values
+    positions: array | None = None   # array('q') of position hashes, only for probable matching
+
+    def tag(self, name: str, default: str = "?") -> str:
+        return self.tags[COMPARE_TAGS.index(name)] or default
+
+
 @dataclass
 class GameInfo:
     index: int = 0                    # 1-based position in the input, across all zip members
     headers: dict[str, str] = field(default_factory=dict)
     start_fen: str | None = None
-    moves: list[str] = field(default_factory=list)       # mainline, UCI
-    positions: set[int] = field(default_factory=set)     # hashes of the positions before each move
+    moves: list[chess.Move] = field(default_factory=list)   # mainline
+    positions: set[int] = field(default_factory=set)        # hashes of the positions before each move
     error: Exception | None = None
     text: str = ""                    # original PGN text
 
     def tag(self, name: str, default: str = "?") -> str:
         return self.headers.get(name) or default
 
-    def describe(self) -> str:
-        """One line identifying the game in reports (PGN games have no IDs)."""
-        return (f"#{self.index}: {self.tag('Date', '????.??.??')} | {self.tag('Event')} | "
-                f"rd {self.tag('Round')} | {self.tag('White')} - {self.tag('Black')} | "
-                f"{self.tag('Result', '*')} | {len(self.moves)} plies")
+    def ref(self) -> GameRef:
+        positions = array("q", self.positions) if len(self.moves) >= PROBABLE_MIN_PLIES else None
+        return GameRef(self.index, tuple(self.tag(t, "") for t in COMPARE_TAGS),
+                       self.start_fen or chess.STARTING_FEN, array("H", map(_encode_move, self.moves)), positions)
+
+
+def describe(game: GameInfo | GameRef) -> str:
+    """One line identifying a game in reports (PGN games have no IDs)."""
+    return (f"#{game.index}: {game.tag('Date', '????.??.??')} | {game.tag('Event')} | "
+            f"rd {game.tag('Round')} | {game.tag('White')} - {game.tag('Black')} | "
+            f"{game.tag('Result', '*')} | {len(game.moves)} plies")
 
 
 class _GameCollector(chess.pgn.BaseVisitor):
@@ -122,7 +170,7 @@ class _GameCollector(chess.pgn.BaseVisitor):
 
     def visit_move(self, board, move):
         if self.info.error is None:
-            self.info.moves.append(move.uci())
+            self.info.moves.append(move)
             self.info.positions.add(hash((board.board_fen(), board.turn)))
 
     def begin_variation(self):
@@ -176,9 +224,9 @@ def exact_key(game: GameInfo, min_plies: int) -> bytes:
     """
     if not game.moves:
         # No moves to compare: only an all-identical header set is a duplicate.
-        parts = [game.tag(k, "") for k in ("Event", "Site", "Date", "Round", "White", "Black", "Result")]
+        parts = [game.tag(k, "") for k in ROSTER]
     else:
-        parts = [game.start_fen or "", " ".join(game.moves)]
+        parts = [game.start_fen or "", " ".join(m.uci() for m in game.moves)]
         if len(game.moves) < min_plies:
             parts += [game.tag("White"), game.tag("Black"), game.tag("Date")]
     return hashlib.blake2b("\x00".join(parts).encode("utf-8", "surrogateescape"), digest_size=16).digest()
@@ -190,19 +238,86 @@ def probable_key(game: GameInfo) -> tuple:
     return frozenset((game.tag("White"), game.tag("Black"))), game.tag("Date")[:4], game.tag("Result", "*")
 
 
-def similarity(a: set[int], b: array) -> float:
-    """Jaccard index of two position sets. Unlike a common move prefix, it stays
-    high when a copy has two moves swapped early and the game transposes back."""
+def shared_positions(a: set[int], b: array) -> tuple[int, int]:
+    """(positions in both games, positions in either game). Their ratio is the
+    similarity (Jaccard index). Unlike a common move prefix, it stays high when a
+    copy has two moves swapped early and the game transposes back."""
     common = len(a.intersection(b))
-    return common / (len(a) + len(b) - common)
+    return common, len(a) + len(b) - common
+
+
+def _surname(name: str) -> str:
+    return name.split(",")[0].strip().lower()
+
+
+def _move_block(start_fen: str, moves: list[chess.Move], i: int, j: int) -> tuple[str, str]:
+    """(move-number range, SAN) of moves[i:j], e.g. ("23-24", "23. Re1 Nd7 24. Bf4")."""
+    board = chess.Board(start_fen)
+    for move in moves[:i]:
+        board.push(move)
+    if i == j:
+        return str(board.fullmove_number), "-"
+    first = board.fullmove_number
+    try:
+        san = board.variation_san(moves[i:j])
+    except ValueError:  # e.g. a Chess960 start that Board(fen) reads differently
+        san = " ".join(m.uci() for m in moves[i:j])
+    for move in moves[i:j - 1]:
+        board.push(move)
+    last = board.fullmove_number
+    return (str(first) if first == last else f"{first}-{last}"), san
+
+
+def move_differences(start_fen: str, kept: list[chess.Move], game: list[chess.Move]) -> list[dict]:
+    """The blocks where two move lists differ, in SAN with move numbers."""
+    matcher = difflib.SequenceMatcher(None, [m.uci() for m in kept], [m.uci() for m in game], autojunk=False)
+    diffs = []
+    for op, i1, i2, j1, j2 in matcher.get_opcodes():
+        if op == "equal":
+            continue
+        kept_range, kept_san = _move_block(start_fen, kept, i1, i2)
+        game_range, game_san = _move_block(start_fen, game, j1, j2)
+        if kept_san == game_san:
+            # Same SAN, different move, e.g. Rxd8 by the other rook after an
+            # earlier difference: show the squares.
+            kept_san += f" ({' '.join(m.uci() for m in kept[i1:i2])})"
+            game_san += f" ({' '.join(m.uci() for m in game[j1:j2])})"
+        diffs.append({"moves": kept_range if i2 > i1 else game_range, "kept": kept_san, "duplicate": game_san})
+    return diffs
 
 
 @dataclass
 class Duplicate:
-    kind: str           # "exact" or "probable"
-    game: str           # describe() of the duplicate
-    kept: str           # describe() of the earlier game it duplicates
+    kind: str                       # "exact" or "probable"
+    index: int                      # the duplicate's position in the input
+    kept_index: int                 # the earlier game it duplicates
+    game: str                       # describe() of both
+    kept: str
     similarity: float = 1.0
+    shared_positions: int | None = None     # probable only: positions in both games ...
+    all_positions: int | None = None        # ... out of positions in either game
+    plies: list[int] = field(default_factory=list)                  # [kept, duplicate]
+    headers: dict[str, list[str]] = field(default_factory=dict)     # tag -> [kept, duplicate]
+    moves: list[dict] = field(default_factory=list)                 # move_differences()
+    conflicts: list[str] = field(default_factory=list)              # keys of CONFLICTS
+
+
+def compare(kind: str, kept: GameRef, game: GameInfo) -> Duplicate:
+    """Build the report entry for `game`, a duplicate of the earlier `kept` game."""
+    dup = Duplicate(kind, game.index, kept.index, describe(game), describe(kept),
+                    plies=[len(kept.moves), len(game.moves)])
+    for tag in COMPARE_TAGS:
+        values = [kept.tag(tag, ""), game.tag(tag, "")]
+        if tag in ROSTER or any(values):
+            dup.headers[tag] = [v or "?" for v in values]
+    if kept.tag("Result") != game.tag("Result"):
+        dup.conflicts.append("result")
+    kw, kb, gw, gb = map(_surname, (kept.tag("White"), kept.tag("Black"), game.tag("White"), game.tag("Black")))
+    if kw != kb and (kw, kb) == (gb, gw):
+        dup.conflicts.append("colors")
+    if kind == "probable":
+        dup.moves = move_differences(kept.start_fen, list(map(_decode_move, kept.moves)), game.moves)
+    return dup
 
 
 @dataclass
@@ -230,14 +345,14 @@ class Report:
     def add(self, game: GameInfo) -> None:
         self.games += 1
         if game.error is not None:
-            self.parse_errors.append(f"{game.describe()} | {game.error}")
+            self.parse_errors.append(f"{describe(game)} | {game.error}")
         if not game.moves and game.error is None:
             self.no_moves += 1
         if "FEN" in game.headers:
             self.custom_start += 1
         white, black = game.tag("White"), game.tag("Black")
         if white == black and white != "?":
-            self.self_play.append(game.describe())
+            self.self_play.append(describe(game))
 
         date = game.tag("Date")
         year = date[:4]
@@ -264,6 +379,9 @@ class Report:
 
     def count(self, kind: str) -> int:
         return sum(d.kind == kind for d in self.duplicates)
+
+    def conflicts(self) -> Counter[str]:
+        return Counter(c for d in self.duplicates for c in d.conflicts)
 
     def to_dict(self, top: int) -> dict:
         """The report as a JSON-serializable dict."""
@@ -292,6 +410,7 @@ class Report:
             "duplicates": {
                 "exact": self.count("exact"),
                 "probable": self.count("probable"),
+                "conflicts": dict(self.conflicts()),
                 "list": [vars(d) for d in self.duplicates],
             },
         }
@@ -312,8 +431,8 @@ def scan(
     --info and --dedup always report the same pairs.
     """
     report = Report(str(path))
-    first_seen: dict[bytes, str] = {}                     # exact key -> describe() of the first copy
-    groups: dict[tuple, list[tuple[str, array]]] = defaultdict(list)   # probable key -> earlier games
+    first_seen: dict[bytes, GameRef] = {}                # exact key -> first copy
+    groups: dict[tuple, list[GameRef]] = defaultdict(list)   # probable key -> distinct earlier games
 
     for game in read_games(path):
         report.add(game)
@@ -323,18 +442,22 @@ def scan(
         if game.error is None:
             key = exact_key(game, min_plies)
             if key in first_seen:
-                dup = Duplicate("exact", game.describe(), first_seen[key])
+                dup = compare("exact", first_seen[key], game)
             else:
-                first_seen[key] = game.describe()
-                if len(game.moves) >= PROBABLE_MIN_PLIES:
+                ref = first_seen[key] = game.ref()
+                if ref.positions is not None:
                     group = groups[probable_key(game)]
-                    best = max(((similarity(game.positions, pos), desc) for desc, pos in group), default=None)
-                    if best and best[0] >= min_similarity:
-                        dup = Duplicate("probable", game.describe(), best[1], round(best[0], 2))
+                    best = max(((shared_positions(game.positions, g.positions), g) for g in group),
+                               key=lambda b: b[0][0] / b[0][1], default=None)
+                    if best and best[0][0] / best[0][1] >= min_similarity:
+                        (common, union), kept = best
+                        dup = compare("probable", kept, game)
+                        dup.similarity = round(common / union, 2)
+                        dup.shared_positions, dup.all_positions = common, union
                     else:
                         # Only distinct games join the group, so later copies are
                         # compared with the game that is kept.
-                        group.append((game.describe(), array("q", game.positions)))
+                        group.append(ref)
         if dup:
             report.duplicates.append(dup)
         if out is not None and (dup is None or (dup.kind == "probable" and not drop_probable)):
@@ -342,15 +465,48 @@ def scan(
     return report
 
 
+def _cell(text: str, width: int = CELL_WIDTH) -> str:
+    return text if len(text) <= width else text[:width - 1] + "…"
+
+
+def format_duplicate(d: Duplicate) -> list[str]:
+    """A duplicate as a table comparing it with the kept game, one line per row."""
+    if d.kind == "exact":
+        title = f"#{d.index} = #{d.kept_index}  exact duplicate: the same moves"
+    else:
+        title = (f"#{d.index} ~ #{d.kept_index}  probable duplicate, similarity {d.similarity:.2f}: "
+                 f"{d.shared_positions} of {d.all_positions} positions occur in both games")
+
+    rows = [(tag, kept, dup) for tag, (kept, dup) in d.headers.items()]
+    rows.append(("Length", f"{d.plies[0]} plies", f"{d.plies[1]} plies"))
+    for diff in d.moves[:MAX_MOVE_DIFFS]:
+        label = f"Move {diff['moves']}" if "-" not in diff["moves"] else f"Moves {diff['moves']}"
+        rows.append((label, diff["kept"], diff["duplicate"]))
+    if len(d.moves) > MAX_MOVE_DIFFS:
+        more = len(d.moves) - MAX_MOVE_DIFFS
+        rows.append(("", f"... {more} more difference{'s' if more > 1 else ''} (see --json)", ""))
+
+    label_w = max(len(r[0]) for r in rows)
+    kept_w = min(CELL_WIDTH, max(len(f"kept #{d.kept_index}"), *(len(r[1]) for r in rows)))
+    lines = [title, f"  {'':<{label_w}}  {f'kept #{d.kept_index}':<{kept_w}}  duplicate #{d.index}"]
+    for label, kept, dup in rows:
+        other = "(same)" if dup == kept and not label.startswith("Move") else dup
+        lines.append(f"  {label:<{label_w}}  {_cell(kept, kept_w):<{kept_w}}  {_cell(other)}".rstrip())
+    lines += [f"  ! {CONFLICTS[c]}" for c in d.conflicts]
+    return lines
+
+
 def print_report(report: Report, limit: int, top: int, min_similarity: float) -> None:
     """Print the --info summary."""
     def row(label: str, value) -> None:
         print(f"{label + ':':<24}{value}")
 
-    def listing(title: str, items: list[str]) -> None:
+    def listing(title: str, items: list[str], note: str = "") -> None:
         shown = items if limit == 0 else items[:limit]
         if shown:
             print(f"\n{title}:")
+            if note:
+                print(note)
             for item in shown:
                 print(f"  {item}")
             if len(items) > len(shown):
@@ -381,6 +537,10 @@ def print_report(report: Report, limit: int, top: int, min_similarity: float) ->
     row("ECO codes", f"{len(report.eco)} distinct")
     exact, probable = report.count("exact"), report.count("probable")
     row("Duplicates", f"{exact} exact, {probable} probable (similarity >= {min_similarity:g})")
+    conflicts = report.conflicts()
+    if conflicts:
+        row("  conflicting copies", f"{conflicts['result']} with different results, "
+                                    f"{conflicts['colors']} with White/Black swapped")
     row("  --dedup keeps", f"{report.games - exact} games "
                            f"({report.games - exact - probable} with --dedup-probable)")
 
@@ -397,11 +557,15 @@ def print_report(report: Report, limit: int, top: int, min_similarity: float) ->
 
     listing("Parse errors", report.parse_errors)
     listing("Self-play games", report.self_play)
-    listing("Exact duplicates (removed by --dedup)",
-            [f"{d.game}\n    = {d.kept}" for d in report.duplicates if d.kind == "exact"])
-    listing("Probable duplicates (removed only with --dedup-probable; review first)",
-            [f"{d.game}\n    ~ {d.kept}  (similarity {d.similarity:.2f})"
-             for d in report.duplicates if d.kind == "probable"])
+    tables = {kind: ["\n  ".join(format_duplicate(d)) + "\n" for d in report.duplicates if d.kind == kind]
+              for kind in ("exact", "probable")}
+    listing("Exact duplicates (removed by --dedup)", tables["exact"],
+            "  The same moves as an earlier game; only the headers differ.\n")
+    listing("Probable duplicates (removed only with --dedup-probable; review first)", tables["probable"],
+            "  Different moves, but the same players, year and result, and mostly the same positions.\n"
+            "  similarity = positions that occur in both games / positions that occur in either game\n"
+            f"  (1.00 = the same positions; pairs below {min_similarity:g} are not listed). The Move rows\n"
+            "  show where the move lists differ; '-' means the game has no moves there.\n")
 
 
 def main(argv: list[str] | None = None) -> int:

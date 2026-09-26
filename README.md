@@ -202,6 +202,28 @@ So copies with a different date precision, event spelling, round or player spell
 share the players, year and result, and at least half of their positions. They are only listed unless you add
 `--dedup-probable`.
 
+Every duplicate is listed as a table next to the game it duplicates. `similarity 0.85: 75 of 88 positions occur in
+both games` means that of the 88 board positions reached in either game, 75 are reached in both. The `Move` rows show
+exactly where the move lists differ (`-` = no moves there), and a `!` line flags conflicting copies, such as
+different results or swapped colors:
+
+```
+  #26 ~ #25  probable duplicate, similarity 0.85: 75 of 88 positions occur in both games
+                 kept #25            duplicate #26
+    Date         1976.07.??          1976.08.27
+    Event        Wattignies wch-jr   Wch U16
+    White        Chandler, Murray G  (same)
+    Black        Kasparov, Garry     (same)
+    Result       1-0                 (same)
+    Length       81 plies            82 plies
+    Moves 19-20  19...g5 20. Rab1    -
+    Move 22      -                   22. Rab1 g5
+    Move 41      -                   41...Ka7
+```
+
+Here one copy plays `...g5` and `Rab1` two moves later than the other (a transcription error) and has one extra final
+move. It is the same game.
+
 The cleaned file contains each kept game exactly as it was in the input: comments, variations and formatting are
 unchanged. The input file is never modified. See [docs/PGNDOCTOR.md](docs/PGNDOCTOR.md) for the full reference,
 the detection rules and the architecture.

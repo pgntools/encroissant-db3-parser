@@ -18,6 +18,8 @@ shakmaty's legal-move order. `caissabase.py` reproduces that order with python-c
   Exact duplicates have the same start FEN and mainline, regardless of headers. Probable duplicates share
   players, year and result, and have a position-set Jaccard index ≥ `--similarity`. They are only removed with `--dedup-probable`.
   Kept games are copied verbatim through a `readline()`-recording reader, so don't re-serialize them.
+  Duplicates are listed as `format_duplicate()` tables: header pairs, `difflib` move blocks in SAN, and conflicts
+  (different results, swapped colors). This needs a compact `GameRef` for every earlier game (~2.2 KB/game in total).
   Parsing follows the lightweight `BaseVisitor` pattern of `~/src/chess-stuff/game-anal-v1/pgntools/repertoire.py`.
   `docs/PGNDOCTOR.md` has the full reference, the architecture and the verification checklist (section 8).
   Verify changes against the Lasker merge: 1187 games → 30 exact / 33 probable duplicates.

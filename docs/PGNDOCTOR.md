@@ -66,7 +66,7 @@ usage: pgndoctor.py [-h] -f PGNFILE [--info] [--json] [--dedup]
 |---|---|---|
 | `-f, --pgnfile FILE` | *required* | Input `.pgn`, or `.zip` (every `.pgn` inside is read, in archive order) |
 | `--info` | on if `--dedup` isn't given | Print the text summary (section 4.1) |
-| `--json` | off | Print the summary as JSON instead (section 4.2). Implies `--info` |
+| `--json` | off | Print the summary as JSON instead (section 4.3). Implies `--info` |
 | `--dedup` | off | Write the file without exact duplicates to `-o` |
 | `--dedup-probable` | off | With `--dedup`, also remove probable duplicates. Requires `--dedup` |
 | `-o, --output FILE` | `<input>.dedup.pgn` next to the input | Output of `--dedup`. Must not be the input file |
@@ -122,26 +122,48 @@ Self-play games:
   #971: 1924.??.?? | New York | rd 1 | Lasker, Emanuel - Lasker, Emanuel | 0-1 | 102 plies
 
 Exact duplicates (removed by --dedup):
-  #25: 1890.??.?? | Berlin m 8990 | rd 2 | Von Bardeleben, Curt - Lasker, Emanuel | 1-0 | 99 plies
-    = #21: 1889.??.?? | Berlin | rd 1 | Von Bardeleben, Curt - Lasker, Emanuel | 1-0 | 99 plies
-  #28: 1890.??.?? | Berlin m 8990 | rd 1 | Lasker, Emanuel - Von Bardeleben, Curt | 1-0 | 93 plies
-    = #22: 1889.??.?? | Berlin | rd 1 | Lasker, Emanuel - Von Bardeleben, Curt | 1-0 | 93 plies
-  ... and 28 more (--list 0 shows all)
+  The same moves as an earlier game; only the headers differ.
+
+  #25 = #21  exact duplicate: the same moves
+            kept #21              duplicate #25
+    Date    1889.??.??            1890.??.??
+    Event   Berlin                Berlin m 8990
+    Site    Berlin GER            (same)
+    Round   1                     2
+    White   Von Bardeleben, Curt  (same)
+    Black   Lasker, Emanuel       (same)
+    Result  1-0                   (same)
+    ECO     C26h                  (same)
+    Length  99 plies              (same)
+
+  ... and 29 more (--list 0 shows all)
 
 Probable duplicates (removed only with --dedup-probable; review first):
-  #124: 1892.??.?? | Londen m | rd 1 | Blackburne, Joseph - Lasker, Emanuel | 0-1 | 98 plies
-    ~ #98: 1892.??.?? | London | rd 1 | Blackburne, Joseph - Lasker, Emanuel | 0-1 | 100 plies  (similarity 0.72)
-  #172: 1893.??.?? | New York | rd 10 | Lasker, Emanuel - Pollock, William | 1-0 | 97 plies
-    ~ #166: 1893.??.?? | New York | rd 1 | Lasker, Emanuel - Pollock, William | 1-0 | 97 plies  (similarity 0.96)
-  ... and 31 more (--list 0 shows all)
+  Different moves, but the same players, year and result, and mostly the same positions.
+  similarity = positions that occur in both games / positions that occur in either game
+  (1.00 = the same positions; pairs below 0.5 are not listed). The Move rows
+  show where the move lists differ; '-' means the game has no moves there.
+
+  #124 ~ #98  probable duplicate, similarity 0.72: 83 of 115 positions occur in both games
+             kept #98                            duplicate #124
+    Date     1892.??.??                          (same)
+    Event    London                              Londen m
+    ...
+    Length   100 plies                           98 plies
+    Move 2   -                                   2. Nc3 Nf6
+    Move 6   6. Nc3 Nf6                          -
+    Move 18  18...Rad8                           18...Rfd8
+    Move 21  21...Rxd8 (f8d8)                    21...Rxd8 (a8d8)
+             ... 1 more difference (see --json)
+
+  ... and 32 more (--list 0 shows all)
 ```
 
 How to read it:
 
 - **`#N`** is the game's 1-based position in the input. PGN games have no IDs, so this position is how a game is
   identified. For a zip, numbering continues across the member files.
-- **Duplicate listings** show the removed copy first, then the kept game it duplicates: `=` for exact, `~` for
-  probable, with the similarity.
+- **Duplicates** are listed as tables comparing each duplicate with the kept game (section 4.2).
 - **Dates** compare as strings, which is correct for the PGN format `YYYY.MM.DD`. A date counts as *partial* if it
   contains `?` and as *missing* if it has no year (`????.??.??` or no `Date` tag). Per-decade counts and player year
   spans only use dated games.
@@ -152,8 +174,90 @@ How to read it:
 - **Lengths** are in plies (half-moves) of the mainline. For a game with a parse error, the plies are counted up to
   the error.
 - **Missing headers** are shown as `?`. A missing `Result` is shown as `*`.
+- **`conflicting copies`** appears under `Duplicates` when some copies contradict each other (section 4.2).
 
-### 4.2 JSON summary (`--json`)
+### 4.2 Reading a duplicate table
+
+Each duplicate gets a table. The title line names the pair: `#26 ~ #25` means game #26 is a probable (`~`) duplicate
+of the earlier game #25, which is the one `--dedup` keeps. An exact duplicate uses `=` instead of `~`.
+
+Here is a probable duplicate from a Kasparov export:
+
+```
+  #26 ~ #25  probable duplicate, similarity 0.85: 75 of 88 positions occur in both games
+                 kept #25            duplicate #26
+    Date         1976.07.??          1976.08.27
+    Event        Wattignies wch-jr   Wch U16
+    Site         Wattignies wch-jr   Wattignies
+    Round        1                   ?
+    White        Chandler, Murray G  (same)
+    Black        Kasparov, Garry     (same)
+    Result       1-0                 (same)
+    ECO          B22v                (same)
+    Length       81 plies            82 plies
+    Moves 19-20  19...g5 20. Rab1    -
+    Move 22      -                   22. Rab1 g5
+    Move 41      -                   41...Ka7
+```
+
+**Similarity.** A game is a sequence of board positions, one before each move. `75 of 88 positions occur in both
+games` means 88 distinct positions appear in at least one of the two games, and 75 of them appear in both. The
+similarity is 75 / 88 = 0.85.
+
+| Similarity | Meaning |
+|---|---|
+| 1.00 | the games pass through exactly the same positions (for example, one move order transposed and back) |
+| 0.85–0.99 | the same game with a small transcription difference: a swapped pair of moves, a missing or extra move, a different final move |
+| 0.50–0.85 | the same game with larger differences, or a different game that shares a long opening. Check the table before removing it |
+| < 0.50 | not reported. Different games of the same players score here (≤ 0.41 in the calibration, section 5.2) |
+
+**Header rows.** Both values are shown where the copies differ, and `(same)` where they agree. The seven-tag roster
+(`Date` to `Result`) is always shown. `WhiteElo`, `BlackElo` and `ECO` are shown if either game has them.
+
+**Move rows** appear only for probable duplicates, because exact duplicates have identical moves. Each row is a
+block where the two move lists differ, in SAN with move numbers:
+
+| Row | Meaning |
+|---|---|
+| `Move 18  18...Rad8  18...Rfd8` | the copies play different moves here |
+| `Moves 19-20  19...g5 20. Rab1  -` | only the kept game has these moves at this point (`-` = no moves) |
+| `Move 22  -  22. Rab1 g5` | only the duplicate has these moves at this point |
+| `Move 41  -  41...Ka7` | the duplicate has an extra move at the end |
+| `Move 21  21...Rxd8 (f8d8)  21...Rxd8 (a8d8)` | the same SAN but a different move (here the other rook captures), so the squares are added |
+
+The two middle rows above show a **move-order swap**. The kept game plays `19...g5 20. Rab1` at moves 19–20, and the
+duplicate plays the same two moves at move 22. That is the typical transcription error, and why these pairs still
+score high. At most 4 blocks are shown per table; the JSON output has all of them.
+
+**Conflicts.** A `!` line below a table marks copies that contradict each other. One of the two copies is wrong,
+and the tool can't tell which:
+
+```
+  #158 = #141  exact duplicate: the same moves
+              kept #141             duplicate #158
+    ...
+    Result    1/2-1/2               1-0
+    ...
+    ! results differ: one copy has a wrong result
+
+  #604 = #505  exact duplicate: the same moves
+              kept #505                    duplicate #604
+    ...
+    White     Kasparov, Garry              Karpov, A.
+    Black     Karpov, Anatoly              Kasparov, Garry
+    ...
+    ! White and Black are swapped: one copy has the colors wrong
+```
+
+| Conflict | Detected when |
+|---|---|
+| `results differ` | the `Result` tags differ. This happens only for exact duplicates, because probable matching requires the same result |
+| `White and Black are swapped` | the kept game's White surname is the duplicate's Black surname, and the other way round. Surnames (the text before the first comma, case-insensitive) are compared, so `Karpov, A.` and `Karpov, Anatoly` count as the same player |
+
+The summary counts them: `conflicting copies: 2 with different results, 2 with White/Black swapped`. `--dedup` keeps
+the first copy either way. If the removed copy is the correct one, fix the kept game's headers by hand.
+
+### 4.3 JSON summary (`--json`)
 
 The same data as the text summary, with the complete duplicate list (not limited by `--list`). Shortened example:
 
@@ -182,15 +286,29 @@ The same data as the text summary, with the complete duplicate list (not limited
   "duplicates": {
     "exact": 30,
     "probable": 33,
+    "conflicts": {},
     "list": [
-      {"kind": "exact",
+      {"kind": "exact", "index": 25, "kept_index": 21,
        "game": "#25: 1890.??.?? | Berlin m 8990 | rd 2 | Von Bardeleben, Curt - Lasker, Emanuel | 1-0 | 99 plies",
        "kept": "#21: 1889.??.?? | Berlin | rd 1 | Von Bardeleben, Curt - Lasker, Emanuel | 1-0 | 99 plies",
-       "similarity": 1.0},
-      {"kind": "probable",
-       "game": "#1137: 1936.??.?? | Nottingham | rd ? | Tartakower, Savielly - Lasker, Emanuel | 1/2-1/2 | 44 plies",
-       "kept": "#1127: 1936.??.?? | Nottingham | rd 1 | Tartakower, Savielly - Lasker, Emanuel | 1/2-1/2 | 44 plies",
-       "similarity": 0.76}
+       "similarity": 1.0, "shared_positions": null, "all_positions": null,
+       "plies": [99, 99],
+       "headers": {"Date": ["1889.??.??", "1890.??.??"], "Event": ["Berlin", "Berlin m 8990"],
+                   "Site": ["Berlin GER", "Berlin GER"], "...": []},
+       "moves": [],
+       "conflicts": []},
+      {"kind": "probable", "index": 124, "kept_index": 98,
+       "game": "#124: 1892.??.?? | Londen m | rd 1 | Blackburne, Joseph - Lasker, Emanuel | 0-1 | 98 plies",
+       "kept": "#98: 1892.??.?? | London | rd 1 | Blackburne, Joseph - Lasker, Emanuel | 0-1 | 100 plies",
+       "similarity": 0.72, "shared_positions": 83, "all_positions": 115,
+       "plies": [100, 98],
+       "headers": {"...": []},
+       "moves": [{"moves": "2", "kept": "-", "duplicate": "2. Nc3 Nf6"},
+                 {"moves": "6", "kept": "6. Nc3 Nf6", "duplicate": "-"},
+                 {"moves": "18", "kept": "18...Rad8", "duplicate": "18...Rfd8"},
+                 {"moves": "21", "kept": "21...Rxd8 (f8d8)", "duplicate": "21...Rxd8 (a8d8)"},
+                 {"moves": "50", "kept": "50. a7 Ra2", "duplicate": "-"}],
+       "conflicts": []}
     ]
   }
 }
@@ -202,11 +320,17 @@ Notes on the fields:
   message.
 - `plies` is `null` for a file with no games.
 - `years` is `null` for a player with only undated games.
-- `similarity` is `1.0` for exact duplicates.
+- In duplicate entries, every pair of values is ordered `[kept, duplicate]`: `plies`, and each tag in `headers`.
+  `headers` holds the same tags as the table, with `?` for a missing tag.
+- `similarity` is `1.0` for exact duplicates, and `shared_positions` / `all_positions` are `null` for them.
+- `moves` lists **all** differing blocks (the table shows at most 4). `moves` is the move-number range, `-` means
+  no moves, and a UCI suffix such as `(f8d8)` is added where both copies have the same SAN.
+- `conflicts` holds the keys `result` and `colors`. The top-level `conflicts` counts them over all duplicates, for
+  example `{"result": 2, "colors": 2}`.
 - The `top` lists hold `[name, count]` pairs. Player entries are objects instead, because they also carry `years`.
 - Undecodable bytes in header values appear as U+FFFD (`�`).
 
-### 4.3 Cleaned file (`--dedup`)
+### 4.4 Cleaned file (`--dedup`)
 
 ```
 $ python pgndoctor.py -f lasker.pgn --dedup
@@ -334,17 +458,19 @@ One file, and one streaming pass over the input:
           _RecordingReader       wraps the stream, records every readline()
                         │
  chess.pgn.read_game(reader, Visitor=_GameCollector)
-                        │       → GameInfo: headers, start FEN, UCI moves,
+                        │       → GameInfo: headers, start FEN, moves,
                         │         position hashes, first error
           read_games()  │       + index and the game's original text (reader.take())
                         ▼
-          scan()        ├── Report.add(game)         statistics
-                        ├── exact_key() / first_seen  exact duplicates
-                        ├── probable_key() / groups   probable duplicates (similarity())
-                        └── out.write(game.text)      --dedup output, kept games only
+          scan()        ├── Report.add(game)              statistics
+                        ├── exact_key() / first_seen      exact duplicates
+                        ├── probable_key() / groups       probable duplicates (shared_positions())
+                        │     first_seen and groups hold a compact GameRef of each earlier game
+                        ├── compare(kind, kept, game)     → Duplicate: headers, move_differences(), conflicts
+                        └── out.write(game.text)          --dedup output, kept games only
                         ▼
-          Report ──► print_report()  (text)
-                 └─► to_dict() → json.dumps  (--json)
+          Report ──► print_report() → format_duplicate()  (text tables)
+                 └─► to_dict() → json.dumps               (--json)
 ```
 
 ### 6.1 Components
@@ -353,15 +479,20 @@ One file, and one streaming pass over the input:
 |---|---|
 | `_open_pgn_streams(path)` | Yields `(name, text stream)` for a `.pgn`, or for each `.pgn` member of a `.zip` (detected by content, not by extension). Pattern taken from `game-anal-v1/pgntools/repertoire.py` |
 | `_RecordingReader` | Wraps a text stream. `readline()` passes lines through and records them. `take()` returns and clears the recorded text: the original text of the game that was just parsed |
-| `_GameCollector` | `chess.pgn.BaseVisitor` that builds a `GameInfo` instead of a `GameNode` tree: headers, start FEN (first `visit_board`), mainline moves as UCI, a hash of each position before a move, and the first error. Side variations are skipped (`begin_variation → SKIP`); after an error, SAN parsing is skipped |
-| `GameInfo` | Dataclass for one game: `index`, `headers`, `start_fen`, `moves`, `positions`, `error`, `text`. `describe()` gives the one-line form used in all reports |
+| `_GameCollector` | `chess.pgn.BaseVisitor` that builds a `GameInfo` instead of a `GameNode` tree: headers, start FEN (first `visit_board`), mainline moves, a hash of each position before a move, and the first error. Side variations are skipped (`begin_variation → SKIP`); after an error, SAN parsing is skipped |
+| `GameInfo` | Dataclass for the game being processed: `index`, `headers`, `start_fen`, `moves` (`chess.Move`), `positions`, `error`, `text`. `ref()` makes its `GameRef` |
+| `GameRef` | Compact, slotted record kept for **every** earlier game, for later comparisons: `index`, the `COMPARE_TAGS` values as a tuple, `start_fen`, moves as `array('H')` (2 bytes each, via `_encode_move`/`_decode_move`), and position hashes as `array('q')` for games of ≥ 20 plies |
+| `describe(game)` | One-line form of a `GameInfo` or `GameRef` (`#N: date \| event \| rd \| White - Black \| result \| plies`) |
 | `read_games(path)` | Generator over all games of all streams. Assigns indices, attaches the raw text, prints progress to stderr every 5000 games |
 | `exact_key(game, min_plies)` | 16-byte digest for exact matching (section 5.1) |
 | `probable_key(game)` | Group key `(frozenset{White, Black}, year, result)` |
-| `similarity(a, b)` | Jaccard index of a `set[int]` and an `array('q')` of position hashes |
-| `Duplicate` | Dataclass: `kind`, `game` and `kept` (descriptions), `similarity` |
-| `Report` | Dataclass with all statistics and the duplicate list. `add(game)` updates the statistics; `to_dict(top)` builds the JSON form |
+| `shared_positions(a, b)` | `(positions in both, positions in either)` for a `set[int]` and an `array('q')`. Their ratio is the similarity |
+| `compare(kind, kept, game)` | Builds the `Duplicate` for a match: header pairs, lengths, move differences (probable only) and conflicts |
+| `move_differences(fen, kept, game)` | `difflib.SequenceMatcher` over the two UCI move lists. Each non-equal block is rendered in SAN with move numbers by `_move_block()`, which replays the game from the start FEN up to the block |
+| `Duplicate` | Dataclass for one match: `kind`, `index`, `kept_index`, descriptions, `similarity`, `shared_positions`/`all_positions`, `plies`, `headers`, `moves`, `conflicts`. Serialized as is (`vars()`) in the JSON |
+| `Report` | Dataclass with all statistics and the duplicate list. `add(game)` updates the statistics, `conflicts()` counts conflicts, `to_dict(top)` builds the JSON form |
 | `scan(path, min_plies, min_similarity, drop_probable, out)` | The single pass. Runs statistics and both duplicate checks, and writes kept games to `out` if one is given |
+| `format_duplicate(d)` | A `Duplicate` as a text table (section 4.2). Cells are cut at 40 characters, and at most 4 move blocks are shown |
 | `print_report(report, limit, top, min_similarity)` | Text rendering of a `Report` |
 | `main(argv)` | argparse, validation, output path, and the dispatch to `scan` and the reports |
 
@@ -400,18 +531,35 @@ digest keeps the index at a few dozen bytes per game. At 128 bits a collision is
 in a compact `array('q')` (8 bytes per position) instead of a `set` of Python ints (~60 bytes each). Python's
 string hashing is salted per process, but hashes are only compared within one run, so that doesn't matter.
 
+**A compact reference per earlier game.** The comparison tables need the kept game's headers and moves, but a
+game can only be recognized as "kept" once a later copy arrives. So a `GameRef` is stored for every game:
+- the compared headers as a tuple;
+- moves as 15-bit integers (from square, to square, promotion piece) in an `array('H')`;
+- position hashes only where probable matching can use them.
+
+SAN is computed only when a pair is reported, by replaying the moves from the start FEN.
+
+**Diffing moves, measuring positions.** Similarity uses position sets because they are robust to move-order swaps
+(section 5.2). The tables, however, need to show *where* the copies differ. So `difflib.SequenceMatcher` aligns
+the two move lists: a swap shows up as a deleted block plus an inserted block, which reads naturally ("only the kept
+game has these moves at move 19–20, only the duplicate at move 22").
+
 **Detection is independent of the output flags.** `scan()` finds duplicates the same way whether or not it writes
 output and whether or not probable duplicates are dropped. Only the write decision uses `drop_probable`. So the
 `--info` report always predicts exactly what `--dedup` does.
 
 ### 6.3 Performance and memory
 
-- **Speed**: ~2.5 ms per game, dominated by python-chess's SAN parsing (1187 games in ~3 s). A 100k-game file takes
-  about 4 minutes. Progress is printed to stderr every 5000 games.
-- **Memory** grows linearly with the number of games, roughly 1 KB per game:
-  - a description string and a digest per game (`first_seen`);
-  - the position array per game of ≥ 20 plies (group members);
-  - one int per game for the length statistics.
+- **Speed**: ~2.6 ms per game, dominated by python-chess's SAN parsing. Examples: 1187 games in ~3 s, 2620 games in
+  ~7 s. A 100k-game file takes about 4–5 minutes. Building the reports (SAN for the differing blocks) adds little.
+  Progress is printed to stderr every 5000 games.
+- **Memory** grows linearly with the number of games, about 2.2 KB per game. That figure was measured with
+  `tracemalloc`: the peak was 3.1 MB for 1187 games and 6.2 MB for 2620 games. It covers:
+  - a `GameRef` and a digest per game: header tuple, 2 bytes per move, 8 bytes per position for games of ≥ 20 plies;
+  - the statistics counters;
+  - the `Duplicate` entries.
+
+  So a 100k-game file needs about 220 MB.
 
   The game texts themselves are not kept: each is written or dropped as soon as it has been parsed.
 
