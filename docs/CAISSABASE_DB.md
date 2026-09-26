@@ -545,12 +545,58 @@ GROUP BY moves_from ORDER BY moves_from;
 SELECT ID, Date, (PlyCount + 1) / 2 AS moves FROM Games ORDER BY PlyCount DESC LIMIT 10;
 ```
 
+### 5.7 Checking and deduplicating a PGN (`pgndoctor.py`)
+
+`pgndoctor.py` works on any `.pgn` (or a `.zip` of PGNs), not only on exports from this database.
+It's most useful after a `--merge` export, where one game is often stored under several spellings.
+
+```bash
+python pgndoctor.py -f lasker.pgn                        # summary (same as --info)
+python pgndoctor.py -f lasker.pgn --info --json          # summary as JSON
+python pgndoctor.py -f lasker.pgn --dedup                # -> lasker.dedup.pgn
+python pgndoctor.py -f lasker.pgn --dedup --dedup-probable -o lasker_clean.pgn
+```
+
+| Option | Meaning |
+|---|---|
+| `-f, --pgnfile FILE` | input `.pgn`, or `.zip` (every `.pgn` inside is read) |
+| `--info` | summary: games, parse errors, games without moves, custom FEN starts, self-play games (White = Black), date range, date precision, games per decade, results, length in plies, distinct players/events/sites/ECO codes, top lists (players with their first and last year) and duplicates. This is the default when `--dedup` isn't given |
+| `--json` | the `--info` summary as JSON |
+| `--dedup` | write the file without exact duplicates to `-o` (default `<input>.dedup.pgn`). The first copy is kept. Kept games are copied as they are in the input, including comments, variations and undecodable bytes, and the input file is never modified |
+| `--dedup-probable` | with `--dedup`, also remove probable duplicates |
+| `--similarity X` | minimum similarity for probable duplicates (default `0.5`) |
+| `--min-plies N` | games shorter than N plies (default 6) only count as duplicates if players and date also match; `0` compares moves only |
+| `--list N` / `--top N` | entries per duplicate/error listing (default 20, `0` = all) / per top list (default 10) |
+
+Two kinds of duplicate are detected:
+
+- **Exact**: same start position and the same mainline moves. Headers are ignored, so copies with a different
+  date precision (`1925.11.25` / `1925.??.??`), event (`Zuerich` / `Zurich`), round or player spelling still match.
+- **Probable**: the move data differs, but the players (in either color order), year and result match, and
+  the two games share most of their positions. Similarity is the Jaccard index of the two games' position sets.
+  This also catches copies with two moves swapped early on, whose move lists differ from that point but whose
+  positions come back together. Games need at least 20 plies for this check. These are only listed, not removed,
+  unless you pass `--dedup-probable`.
+
+The 0.5 default was calibrated on `Lasker, Emanuel` + `Lasker, E.`. Copies of one game scored 0.52–0.98,
+and different games from the same match scored ≤ 0.41. That merged export (`--ids 316247,297878 --merge --min-moves 15`,
+1187 games) contains 30 exact and 33 probable duplicates: `--dedup` leaves 1157 games, and adding `--dedup-probable` leaves 1124.
+
+Games with parse errors (e.g. an illegal move) are listed and always kept unchanged. Their moves stop at the error,
+so comparing them could match a different game. Parsing takes about 2.5 ms per game.
+
+The summary also shows data-quality problems. In the Lasker export, the top player's years are `1889-1976`,
+although Emanuel Lasker died in 1941: `Lasker, E.` also contains Edward Lasker's games (see section 6).
+
 ---
 
 ## 6. Gotchas / data quality
 
 - **Duplicate player identities.** One person may appear under several spellings (`Carlsen, Magnus` / `Carlsen, M`).
   Search with `LIKE` first, then pass all relevant names/IDs and optionally `--merge` them (see 5.2).
+  The reverse happens too: a short spelling can mix several people. `Lasker, E.` holds Emanuel Lasker's games
+  up to 1936 plus about 46 games from 1946–1976, which are Edward Lasker's. Merged exports also contain the same
+  game under several spellings. Check them with `pgndoctor.py` (see 5.7).
 - **`Result` and `Round` ignore their declared INTEGER type.** Compare `Result` with strings (`'1-0'`),
   and expect `Round` to be int, float or text.
 - **No annotations.** The PGNs contain only the mainline: no comments, clock times or variations.
@@ -568,5 +614,6 @@ SELECT ID, Date, (PlyCount + 1) / 2 AS moves FROM Games ORDER BY PlyCount DESC L
 |---|---|
 | `caissabase.py` | Library: connection, player search, game query, move decoder, PGN conversion |
 | `export_pgn.py` | CLI to export a player's games to PGN |
+| `pgndoctor.py` | CLI to summarize any PGN file and remove duplicate games |
 | `requirements.txt` | `chess` (python-chess) |
 | `docs/CAISSABASE_DB.md` | This document |

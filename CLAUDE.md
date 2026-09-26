@@ -13,6 +13,13 @@ shakmaty's legal-move order. `caissabase.py` reproduces that order with python-c
   comma-separated `--ids`,
   `--merge`/`--merge-as` to union identities under one name, `--color`, `--from`, `--to`, `--min-moves`, `--max-moves`). The filter SQL is shared by
   export and `--search` through `caissabase._game_filters()`, so search counts match the exports.
+- `pgndoctor.py`: standalone CLI for any `.pgn`/`.zip`, with no DB access. `--info` prints a summary (the default),
+  `--json` prints it as JSON, and `--dedup` writes `<input>.dedup.pgn`.
+  Exact duplicates have the same start FEN and mainline, regardless of headers. Probable duplicates share
+  players, year and result, and have a position-set Jaccard index ≥ `--similarity`. They are only removed with `--dedup-probable`.
+  Kept games are copied verbatim through a `readline()`-recording reader, so don't re-serialize them.
+  Parsing follows the lightweight `BaseVisitor` pattern of `~/src/chess-stuff/game-anal-v1/pgntools/repertoire.py`.
+  Verify changes against the Lasker merge in docs section 5.7 (1187 → 30 exact / 33 probable).
 - `requirements.txt`: dependencies (`chess`).
 
 ## Environment
