@@ -9,7 +9,8 @@ shakmaty's legal-move order. `caissabase.py` reproduces that order with python-c
 
 - `docs/CAISSABASE_DB.md`: schema, move encoding, data quirks and SQL/Python extraction examples. Read this first.
 - `caissabase.py`: library for the read-only connection, player search, game queries, move decoding and PGN conversion.
-- `export_pgn.py`: CLI to export a player's games to PGN (`--search`, `--id`, `--color`, `--from`, `--to`).
+- `export_pgn.py`: CLI to export a player's games to PGN (`--search`, repeatable `--name`/`--id`,
+  `--merge`/`--merge-as` to union identities under one name, `--color`, `--from`, `--to`, `--min-moves`).
 - `requirements.txt`: dependencies (`chess`).
 
 ## Environment

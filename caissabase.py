@@ -144,7 +144,7 @@ def find_players(con: sqlite3.Connection, pattern: str, with_counts: bool = True
 
 GAME_QUERY = """
 SELECT g.ID, g.Date, g.UTCTime, g.Round, g.WhiteElo, g.BlackElo, g.Result,
-       g.TimeControl, g.ECO, g.PlyCount, g.FEN, g.Moves,
+       g.TimeControl, g.ECO, g.PlyCount, g.FEN, g.Moves, g.WhiteID, g.BlackID,
        w.Name AS White, b.Name AS Black, e.Name AS Event, s.Name AS Site
 FROM Games g
 JOIN Players w ON w.ID = g.WhiteID
@@ -160,11 +160,14 @@ def iter_player_games(
     color: str | None = None,
     date_from: str | None = None,
     date_to: str | None = None,
+    min_moves: int | None = None,
 ) -> Iterator[sqlite3.Row]:
     """Yield game rows for the given player IDs, oldest first.
 
     color: None (both), "white" or "black".
     date_from / date_to: inclusive bounds in PGN date format, e.g. "2015.01.01".
+    min_moves: skip games shorter than this many full moves (PGN move numbers);
+        a game has N moves once White has played move N, i.e. PlyCount >= 2N - 1.
     """
     ids = list(player_ids)
     marks = ",".join("?" * len(ids))
@@ -182,6 +185,9 @@ def iter_player_games(
     if date_to:
         where.append("g.Date <= ?")
         params.append(date_to + "~")  # '~' sorts after digits and '?', keeps "2020.??.??"
+    if min_moves and min_moves > 0:
+        where.append("g.PlyCount >= ?")
+        params.append(2 * min_moves - 1)
     sql = GAME_QUERY + " WHERE " + " AND ".join(where) + " ORDER BY g.Date, g.ID"
     yield from con.execute(sql, params)
 
@@ -193,16 +199,38 @@ def _format_round(value) -> str:
     return str(value)
 
 
-def row_to_game(row: sqlite3.Row) -> chess.pgn.Game:
-    """Convert a row from GAME_QUERY into a python-chess Game."""
+def resolve_players(con: sqlite3.Connection, names: Iterable[str]) -> tuple[list[Player], list[str]]:
+    """Look up exact player names. Returns (found players, names not found)."""
+    found, missing = [], []
+    for name in names:
+        row = con.execute("SELECT ID, Name FROM Players WHERE Name = ?", (name,)).fetchone()
+        if row is None:
+            missing.append(name)
+        else:
+            found.append(Player(row["ID"], row["Name"]))
+    return found, missing
+
+
+def merge_identities(player_ids: Iterable[int], canonical_name: str) -> dict[int, str]:
+    """Build a rename map for row_to_game() that reports several IDs under one name."""
+    return {pid: canonical_name for pid in player_ids}
+
+
+def row_to_game(row: sqlite3.Row, rename: dict[int, str] | None = None) -> chess.pgn.Game:
+    """Convert a row from GAME_QUERY into a python-chess Game.
+
+    rename: optional {player ID: name} map overriding the stored White/Black
+    names, e.g. merge_identities([73583, 2876], "Carlsen, Magnus").
+    """
+    rename = rename or {}
     game = chess.pgn.Game()
     h = game.headers
     h["Event"] = row["Event"] or "?"
     h["Site"] = row["Site"] or "?"
     h["Date"] = row["Date"] or "????.??.??"
     h["Round"] = _format_round(row["Round"])
-    h["White"] = row["White"] or "?"
-    h["Black"] = row["Black"] or "?"
+    h["White"] = rename.get(row["WhiteID"]) or row["White"] or "?"
+    h["Black"] = rename.get(row["BlackID"]) or row["Black"] or "?"
     h["Result"] = row["Result"] or "*"
     if row["WhiteElo"]:
         h["WhiteElo"] = str(row["WhiteElo"])
@@ -220,5 +248,5 @@ def row_to_game(row: sqlite3.Row) -> chess.pgn.Game:
     return game
 
 
-def row_to_pgn(row: sqlite3.Row) -> str:
-    return str(row_to_game(row))
+def row_to_pgn(row: sqlite3.Row, rename: dict[int, str] | None = None) -> str:
+    return str(row_to_game(row, rename))

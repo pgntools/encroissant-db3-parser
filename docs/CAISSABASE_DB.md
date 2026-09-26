@@ -255,12 +255,42 @@ python export_pgn.py --search "Carlsen%"
 # 2. export by exact name
 python export_pgn.py "Carlsen, Magnus" -o carlsen.pgn
 
-# 3. merge several spellings by ID, as White only, since 2020
-python export_pgn.py --id 73583 --id 2876 --color white --from 2020.01.01 -o carlsen_white.pgn
+# 3. several spellings of the same player (--name is repeatable; --id works too)
+python export_pgn.py --name "Carlsen, Magnus" --name "Carlsen, M" -o carlsen_all.pgn
 
-# date range
+# 4. ...and union them into one identity: every "Carlsen, M" in the White/Black
+#    headers is rewritten to the first given name, "Carlsen, Magnus"
+python export_pgn.py --name "Carlsen, Magnus" --name "Carlsen, M" --merge -o carlsen_all.pgn
+
+# 5. same, but with a canonical name of your choice
+python export_pgn.py --name "Carlsen, M" --id 73583 --merge-as "Magnus Carlsen" -o carlsen_all.pgn
+
+# filters: color and date range
+python export_pgn.py --id 73583 --id 2876 --color white --from 2020.01.01 -o carlsen_white.pgn
 python export_pgn.py "Kasparov, Garry" --from 1985.01.01 --to 1990.12.31 -o kasparov_85_90.pgn
+
+# skip games shorter than 20 full moves
+python export_pgn.py "Carlsen, Magnus" --min-moves 20 -o carlsen_20plus.pgn
 ```
+
+| Option | Meaning |
+|---|---|
+| `NAME` (positional) / `--name NAME` | exact player name; both may be repeated and combined |
+| `--id ID` | player ID (repeatable), as printed by `--search` |
+| `--merge` | report all selected identities under the first given name/ID |
+| `--merge-as NAME` | report all selected identities under `NAME` (implies `--merge`) |
+| `--color white\|black` | only games with that color (for any of the selected identities) |
+| `--from` / `--to` | inclusive date bounds, `YYYY.MM.DD` |
+| `--min-moves N` | skip games shorter than N full moves; filtered in SQL as `PlyCount >= 2*N - 1` (uses `games_plycount_idx`) |
+| `--search PATTERN` | list matching players with game counts, then exit |
+| `-o FILE` | output file (default: stdout) |
+
+An unknown name or ID stops the export with exit code 1, so a typo can't silently drop games.
+Merging only changes the PGN headers; the database is never modified.
+
+Before merging, check that a short spelling really is the same person: `Carlsen, E` is not Magnus.
+Also, the same game is sometimes stored under two spellings. `Carlsen, Magnus` + `Carlsen, M` contain
+6 such duplicate pairs (same date and moves) among 5,806 games.
 
 Speed is about 150 games/s: 2,543 games take ~17 s. Nearly all of that time is move decoding.
 
@@ -279,6 +309,14 @@ for p in cb.find_players(con, "Carlsen, M%"):
 with open("carlsen.pgn", "w") as f:
     for row in cb.iter_player_games(con, [73583, 2876], color=None, date_from="2019.01.01"):
         f.write(cb.row_to_pgn(row) + "\n\n")
+
+# union several identities under one name
+players, missing = cb.resolve_players(con, ["Carlsen, Magnus", "Carlsen, M"])
+ids = [p.id for p in players]
+rename = cb.merge_identities(ids, "Carlsen, Magnus")     # {73583: ..., 2876: ...}
+with open("carlsen_all.pgn", "w") as f:
+    for row in cb.iter_player_games(con, ids):
+        f.write(cb.row_to_pgn(row, rename) + "\n\n")
 
 # work with python-chess objects instead of text
 row = next(cb.iter_player_games(con, [73583]))
@@ -396,11 +434,11 @@ def decode(blob, fen=None):
 ## 6. Gotchas / data quality
 
 - **Duplicate player identities.** One person may appear under several spellings (`Carlsen, Magnus` / `Carlsen, M`).
-  Search with `LIKE` first and pass all relevant IDs.
+  Search with `LIKE` first, then pass all relevant names/IDs and optionally `--merge` them (see 5.2).
 - **`Result` and `Round` ignore their declared INTEGER type.** Compare `Result` with strings (`'1-0'`),
   and expect `Round` to be int, float or text.
 - **No annotations.** The PGNs contain only the mainline: no comments, clock times or variations.
-- **Games with 0 plies** (9,286) produce PGNs with just the result.
+- **Games with 0 plies** (9,286) produce PGNs with just the result. Drop them with `--min-moves 1`.
 - **`UTCTime`, `TimeControl`, `Players.Elo` are always NULL.**
 - **Extended ECO** codes (`A45w`) aren't strictly PGN-standard. Use `substr(ECO,1,3)` if you need plain ECO.
 - **FEN games** (88) get `[SetUp "1"]` and `[FEN "..."]` headers. Some store the standard start position with
