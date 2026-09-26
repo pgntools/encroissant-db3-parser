@@ -125,20 +125,64 @@ def connect(path: str = DEFAULT_DB) -> sqlite3.Connection:
     return con
 
 
-def find_players(con: sqlite3.Connection, pattern: str, with_counts: bool = True) -> list[Player]:
+def _game_filters(
+    date_from: str | None = None,
+    date_to: str | None = None,
+    min_moves: int | None = None,
+    max_moves: int | None = None,
+) -> tuple[list[str], list]:
+    """SQL conditions (on alias ``g``) and params for the common game filters.
+
+    Moves are full moves (PGN move numbers): a game has N moves once White has
+    played move N, so it has at least N moves if PlyCount >= 2N - 1 and at most
+    N moves if PlyCount <= 2N.
+    """
+    where, params = [], []
+    if date_from:
+        where.append("g.Date >= ?")
+        params.append(date_from)
+    if date_to:
+        where.append("g.Date <= ?")
+        params.append(date_to + "~")  # '~' sorts after digits and '?', keeps "2020.??.??"
+    if min_moves and min_moves > 0:
+        where.append("g.PlyCount >= ?")
+        params.append(2 * min_moves - 1)
+    if max_moves is not None:
+        where.append("g.PlyCount <= ?")
+        params.append(2 * max_moves)
+    return where, params
+
+
+def find_players(
+    con: sqlite3.Connection,
+    pattern: str,
+    with_counts: bool = True,
+    color: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    min_moves: int | None = None,
+    max_moves: int | None = None,
+) -> list[Player]:
     """Find players whose name matches a SQL LIKE pattern (case-insensitive for ASCII).
 
-    Example: find_players(con, "Carlsen%")
+    Game counts honour the same filters as iter_player_games(), so they match
+    what an export with those filters would return.
+
+    Example: find_players(con, "Carlsen%", min_moves=20)
     """
     rows = con.execute("SELECT ID, Name FROM Players WHERE Name LIKE ? ORDER BY Name", (pattern,)).fetchall()
     players = [Player(r["ID"], r["Name"]) for r in rows]
     if with_counts:
+        filters, fparams = _game_filters(date_from, date_to, min_moves, max_moves)
+        sides = [s for s in ("White", "Black") if color in (None, s.lower())]
+        # One indexed count per side is faster than a single WhiteID = ? OR BlackID = ?.
+        sql = " + ".join(
+            "(SELECT COUNT(*) FROM Games g WHERE " + " AND ".join([f"g.{side}ID = ?"] + filters) + ")"
+            for side in sides
+        )
         for p in players:
-            p.games = con.execute(
-                "SELECT (SELECT COUNT(*) FROM Games WHERE WhiteID = ?) + "
-                "(SELECT COUNT(*) FROM Games WHERE BlackID = ?)",
-                (p.id, p.id),
-            ).fetchone()[0]
+            params = [v for _ in sides for v in [p.id] + fparams]
+            p.games = con.execute("SELECT " + sql, params).fetchone()[0]
     return players
 
 
@@ -161,13 +205,14 @@ def iter_player_games(
     date_from: str | None = None,
     date_to: str | None = None,
     min_moves: int | None = None,
+    max_moves: int | None = None,
 ) -> Iterator[sqlite3.Row]:
     """Yield game rows for the given player IDs, oldest first.
 
     color: None (both), "white" or "black".
     date_from / date_to: inclusive bounds in PGN date format, e.g. "2015.01.01".
-    min_moves: skip games shorter than this many full moves (PGN move numbers);
-        a game has N moves once White has played move N, i.e. PlyCount >= 2N - 1.
+    min_moves / max_moves: inclusive bounds on the game length in full moves
+        (PGN move numbers, "1. e4 e5" = 1 move). See _game_filters().
     """
     ids = list(player_ids)
     marks = ",".join("?" * len(ids))
@@ -178,16 +223,9 @@ def iter_player_games(
     if color in (None, "black"):
         sides.append(f"g.BlackID IN ({marks})")
         params += ids
-    where = ["(" + " OR ".join(sides) + ")"]
-    if date_from:
-        where.append("g.Date >= ?")
-        params.append(date_from)
-    if date_to:
-        where.append("g.Date <= ?")
-        params.append(date_to + "~")  # '~' sorts after digits and '?', keeps "2020.??.??"
-    if min_moves and min_moves > 0:
-        where.append("g.PlyCount >= ?")
-        params.append(2 * min_moves - 1)
+    filters, fparams = _game_filters(date_from, date_to, min_moves, max_moves)
+    where = ["(" + " OR ".join(sides) + ")"] + filters
+    params += fparams
     sql = GAME_QUERY + " WHERE " + " AND ".join(where) + " ORDER BY g.Date, g.ID"
     yield from con.execute(sql, params)
 

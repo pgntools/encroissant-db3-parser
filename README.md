@@ -47,8 +47,11 @@ python export_pgn.py --name "Carlsen, M" --id 73583 --merge-as "Magnus Carlsen" 
 python export_pgn.py --id 73583 --color white --from 2020.01.01 -o carlsen_white.pgn
 python export_pgn.py "Kasparov, Garry" --from 1985.01.01 --to 1990.12.31 -o kasparov_85_90.pgn
 
-# 7. skip short games (forfeits, quick draws): keep only games of 20+ moves
-python export_pgn.py "Carlsen, Magnus" --min-moves 20 -o carlsen_20plus.pgn
+# 7. filter by game length in full moves (see "Filtering by game length" below)
+python export_pgn.py "Carlsen, Magnus" --min-moves 20 --max-moves 40 -o carlsen_20_40.pgn
+
+# 8. search counts honour the same filters, so they show what an export would return
+python export_pgn.py --search "Carlsen, Ma%" --color white --min-moves 20 --from 2015.01.01
 ```
 
 | Option | Meaning |
@@ -60,7 +63,8 @@ python export_pgn.py "Carlsen, Magnus" --min-moves 20 -o carlsen_20plus.pgn
 | `--color white\|black` | only games played with that color |
 | `--from DATE` / `--to DATE` | inclusive date bounds, `YYYY.MM.DD` |
 | `--min-moves N` | skip games shorter than N full moves (`1. e4 e5` = 1 move) |
-| `--search PATTERN` | list matching players with game counts, then exit |
+| `--max-moves N` | skip games longer than N full moves |
+| `--search PATTERN` | list matching players with game counts, then exit. Counts honour `--color`, `--from`, `--to`, `--min-moves` and `--max-moves` |
 | `--db PATH` | database file (default `caissabase_2024.db3`) |
 | `-o FILE` | output file (default: stdout) |
 
@@ -82,6 +86,56 @@ Example output:
 
 Export runs at about 150 games/s. Summary messages go to stderr, so `python export_pgn.py NAME > out.pgn` stays clean.
 
+### Filtering by game length
+
+`--min-moves` and `--max-moves` count **full moves** as in PGN move numbers: a game with last move `20. d5` or
+`20… Kh8` has 20 moves. Both bounds are inclusive and combine with every other option.
+
+Examples with both Carlsen identities merged ("Carlsen, Magnus" + "Carlsen, M", 5806 games without filters):
+
+```bash
+# drop the empty (0-move) games                                               -> 5798 games
+python export_pgn.py --name "Carlsen, Magnus" --name "Carlsen, M" --merge --min-moves 1 -o carlsen.pgn
+
+# only games of 40+ moves (skips quick draws and short blitz games)           -> 3563 games
+python export_pgn.py --name "Carlsen, Magnus" --name "Carlsen, M" --merge --min-moves 40 -o carlsen_40plus.pgn
+
+# miniatures: at most 20 moves                                                -> 196 games
+python export_pgn.py --name "Carlsen, Magnus" --name "Carlsen, M" --merge --max-moves 20 -o carlsen_miniatures.pgn
+
+# a length range                                                              -> 3933 games
+python export_pgn.py --name "Carlsen, Magnus" --name "Carlsen, M" --merge --min-moves 30 --max-moves 60 -o carlsen_30_60.pgn
+
+# preview the counts per identity before exporting (search honours the filters)
+python export_pgn.py --search "Carlsen, M%" --min-moves 40
+#     2876    2077 games  Carlsen, M
+#    73583    1486 games  Carlsen, Magnus
+#   ...
+```
+
+| Filter (Carlsen, Magnus + Carlsen, M) | Games |
+|---|---|
+| none | 5806 |
+| `--min-moves 1` | 5798 |
+| `--min-moves 20` | 5646 |
+| `--min-moves 40` | 3563 |
+| `--min-moves 60` | 1129 |
+| `--max-moves 20` | 196 |
+| `--max-moves 25` | 456 |
+| `--min-moves 30 --max-moves 60` | 3933 |
+
+```python
+# the same filters in Python: Carlsen's won miniatures (max 25 moves), both identities
+ids = {73583, 2876}                                  # "Carlsen, Magnus", "Carlsen, M"
+wins = [
+    r for r in cb.iter_player_games(con, ids, max_moves=25)
+    if (r["WhiteID"] in ids and r["Result"] == "1-0") or (r["BlackID"] in ids and r["Result"] == "0-1")
+]
+```
+
+More examples, including raw SQL for length ranges and length distributions, are in
+[docs/CAISSABASE_DB.md § 5.6](docs/CAISSABASE_DB.md#56-filtering-by-game-length).
+
 ## Python API: `caissabase.py`
 
 ```python
@@ -89,8 +143,8 @@ import caissabase as cb
 
 con = cb.connect("caissabase_2024.db3")                  # read-only sqlite3 connection
 
-# find players by LIKE pattern (with game counts)
-for p in cb.find_players(con, "Carlsen, M%"):
+# find players by LIKE pattern (game counts accept the same filters as iter_player_games)
+for p in cb.find_players(con, "Carlsen, M%", min_moves=20):
     print(p.id, p.name, p.games)
 
 # resolve exact names to IDs
@@ -100,7 +154,8 @@ ids = [p.id for p in players]
 # stream games to a PGN file, merging identities under one name
 rename = cb.merge_identities(ids, "Carlsen, Magnus")
 with open("carlsen.pgn", "w") as f:
-    for row in cb.iter_player_games(con, ids, color="white", date_from="2019.01.01", min_moves=20):
+    for row in cb.iter_player_games(con, ids, color="white", date_from="2019.01.01",
+                                    min_moves=20, max_moves=60):
         f.write(cb.row_to_pgn(row, rename) + "\n\n")
 
 # work with python-chess objects instead of text
@@ -115,9 +170,9 @@ moves = cb.decode_moves(row["Moves"], row["FEN"])         # list[chess.Move]
 | Function | Purpose |
 |---|---|
 | `connect(path)` | open the DB read-only, rows as `sqlite3.Row` |
-| `find_players(con, pattern)` | players matching a LIKE pattern, with game counts |
+| `find_players(con, pattern, **filters)` | players matching a LIKE pattern, with (filtered) game counts |
 | `resolve_players(con, names)` | exact names → `(players, missing_names)` |
-| `iter_player_games(con, ids, color, date_from, date_to, min_moves)` | game rows for player IDs, oldest first |
+| `iter_player_games(con, ids, color, date_from, date_to, min_moves, max_moves)` | game rows for player IDs, oldest first |
 | `merge_identities(ids, name)` | rename map for merging identities |
 | `row_to_game(row, rename)` / `row_to_pgn(row, rename)` | row → `chess.pgn.Game` / PGN text |
 | `decode_moves(blob, fen)` | `Games.Moves` blob → list of `chess.Move` |

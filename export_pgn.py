@@ -6,6 +6,8 @@ Examples:
     python export_pgn.py "Carlsen, Magnus" --color white --from 2020.01.01 -o carlsen_white.pgn
     python export_pgn.py --id 12345 --id 67890 -o player.pgn
     python export_pgn.py "Carlsen, Magnus" --min-moves 20 -o carlsen_20plus.pgn
+    python export_pgn.py "Carlsen, Magnus" --max-moves 25 -o carlsen_miniatures.pgn
+    python export_pgn.py --search "Carlsen%" --min-moves 20   # counts honour the filters
 
     # several spellings of the same player, reported under the first name
     python export_pgn.py --name "Carlsen, Magnus" --name "Carlsen, M" --merge -o carlsen.pgn
@@ -36,12 +38,20 @@ def main() -> int:
     ap.add_argument("--to", dest="date_to", help="latest date, YYYY.MM.DD")
     ap.add_argument("--min-moves", type=int, metavar="N",
                     help="skip games shorter than N full moves (1. e4 e5 = 1 move)")
+    ap.add_argument("--max-moves", type=int, metavar="N",
+                    help="skip games longer than N full moves")
     args = ap.parse_args()
+
+    if args.min_moves is not None and args.max_moves is not None and args.min_moves > args.max_moves:
+        ap.error("--min-moves must not be greater than --max-moves")
+    filters = dict(color=args.color, date_from=args.date_from, date_to=args.date_to,
+                   min_moves=args.min_moves, max_moves=args.max_moves)
 
     con = cb.connect(args.db)
 
     if args.search:
-        for p in cb.find_players(con, args.search):
+        # Counts honour --color, --from, --to, --min-moves and --max-moves.
+        for p in cb.find_players(con, args.search, **filters):
             print(f"{p.id:>8}  {p.games:>6} games  {p.name}")
         return 0
 
@@ -71,7 +81,7 @@ def main() -> int:
     out = open(args.output, "w", encoding="utf-8") if args.output else sys.stdout
     count = errors = 0
     try:
-        for row in cb.iter_player_games(con, ids, args.color, args.date_from, args.date_to, args.min_moves):
+        for row in cb.iter_player_games(con, ids, **filters):
             try:
                 pgn = cb.row_to_pgn(row, rename)
             except ValueError as e:

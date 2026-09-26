@@ -269,8 +269,13 @@ python export_pgn.py --name "Carlsen, M" --id 73583 --merge-as "Magnus Carlsen" 
 python export_pgn.py --id 73583 --id 2876 --color white --from 2020.01.01 -o carlsen_white.pgn
 python export_pgn.py "Kasparov, Garry" --from 1985.01.01 --to 1990.12.31 -o kasparov_85_90.pgn
 
-# skip games shorter than 20 full moves
+# game length in full moves: 20+ moves, at most 25 moves, or a range
 python export_pgn.py "Carlsen, Magnus" --min-moves 20 -o carlsen_20plus.pgn
+python export_pgn.py "Carlsen, Magnus" --max-moves 25 -o carlsen_miniatures.pgn
+python export_pgn.py "Carlsen, Magnus" --min-moves 20 --max-moves 40 -o carlsen_20_40.pgn
+
+# search counts honour the filters
+python export_pgn.py --search "Carlsen%" --min-moves 20
 ```
 
 | Option | Meaning |
@@ -281,8 +286,9 @@ python export_pgn.py "Carlsen, Magnus" --min-moves 20 -o carlsen_20plus.pgn
 | `--merge-as NAME` | report all selected identities under `NAME` (implies `--merge`) |
 | `--color white\|black` | only games with that color (for any of the selected identities) |
 | `--from` / `--to` | inclusive date bounds, `YYYY.MM.DD` |
-| `--min-moves N` | skip games shorter than N full moves; filtered in SQL as `PlyCount >= 2*N - 1` (uses `games_plycount_idx`) |
-| `--search PATTERN` | list matching players with game counts, then exit |
+| `--min-moves N` | skip games shorter than N full moves; filtered in SQL as `PlyCount >= 2*N - 1` |
+| `--max-moves N` | skip games longer than N full moves; filtered in SQL as `PlyCount <= 2*N` (see [5.6](#56-filtering-by-game-length)) |
+| `--search PATTERN` | list matching players with game counts, then exit. Counts honour `--color`, `--from`, `--to` and the move filters |
 | `-o FILE` | output file (default: stdout) |
 
 An unknown name or ID stops the export with exit code 1, so a typo can't silently drop games.
@@ -427,6 +433,114 @@ def decode(blob, fen=None):
         legal = sorted(board.legal_moves, key=lambda m: key(board, m, board.is_check()))
         board.push(legal[idx])
     return board.move_stack
+```
+
+### 5.6 Filtering by game length
+
+Game length is measured in **full moves**, matching PGN move numbers (`1. e4 e5` = 1 move). A game has N moves
+once White has played move N. The database stores half-moves (`PlyCount`), and the filters convert as follows:
+
+| Filter | SQL condition | Example |
+|---|---|---|
+| `--min-moves N` / `min_moves=N` | `PlyCount >= 2*N - 1` | `--min-moves 20` keeps games whose last move is `20. …` or later |
+| `--max-moves N` / `max_moves=N` | `PlyCount <= 2*N` | `--max-moves 25` keeps games ending at `25. …` or `25… …` at the latest |
+
+| `PlyCount` | Last move | Full moves |
+|---|---|---|
+| 38 | `19… Nf6` | 19 |
+| 39 | `20. d5` | 20 |
+| 40 | `20… Kh8` | 20 |
+| 41 | `21. Qh5` | 21 |
+
+Both bounds are inclusive and can be combined with each other and with `--color`, `--from`/`--to` and `--merge`.
+`PlyCount` is indexed (`games_plycount_idx`), and the filter runs in SQL, so skipped games are never decoded.
+
+**CLI recipes**
+
+All examples merge both Carlsen identities ("Carlsen, Magnus" + "Carlsen, M", 5806 games without filters):
+
+```bash
+# drop the empty (0-move) games ("Carlsen, M" has 8)                          -> 5798 games
+python export_pgn.py --name "Carlsen, Magnus" --name "Carlsen, M" --merge --min-moves 1 -o carlsen.pgn
+
+# only games of 40+ moves                                                     -> 3563 games
+python export_pgn.py --name "Carlsen, Magnus" --name "Carlsen, M" --merge --min-moves 40 -o carlsen_40plus.pgn
+
+# miniatures: at most 20 moves                                                -> 196 games
+python export_pgn.py --name "Carlsen, Magnus" --name "Carlsen, M" --merge --max-moves 20 -o carlsen_miniatures.pgn
+
+# a length range                                                              -> 3933 games
+python export_pgn.py --name "Carlsen, Magnus" --name "Carlsen, M" --merge --min-moves 30 --max-moves 60 -o carlsen_30_60.pgn
+
+# a length range combined with color and date
+python export_pgn.py --name "Carlsen, Magnus" --name "Carlsen, M" --merge \
+    --color white --from 2015.01.01 --min-moves 30 --max-moves 60 -o carlsen_white_30_60.pgn
+
+# preview the counts per identity before exporting (search honours the filters)
+python export_pgn.py --search "Carlsen, M%" --min-moves 40
+#     2876    2077 games  Carlsen, M
+#    73583    1486 games  Carlsen, Magnus
+```
+
+How the filters change the merged Carlsen export:
+
+| Filter | Carlsen, Magnus | Carlsen, M | Merged export |
+|---|---|---|---|
+| none | 2543 | 3263 | 5806 |
+| `--min-moves 1` | 2543 | 3255 | 5798 |
+| `--min-moves 20` | 2482 | 3164 | 5646 |
+| `--min-moves 40` | 1486 | 2077 | 3563 |
+| `--min-moves 60` | 459 | 670 | 1129 |
+| `--max-moves 20` | 78 | 118 | 196 |
+| `--max-moves 25` | 205 | 251 | 456 |
+| `--min-moves 30 --max-moves 60` | 1731 | 2202 | 3933 |
+
+**Python**
+
+```python
+import caissabase as cb
+
+con = cb.connect()
+players, _ = cb.resolve_players(con, ["Carlsen, Magnus", "Carlsen, M"])
+CARLSEN = {p.id for p in players}                    # {73583, 2876}
+rename = cb.merge_identities(CARLSEN, "Carlsen, Magnus")
+
+# all games between 30 and 60 moves (3933 games)
+rows = cb.iter_player_games(con, CARLSEN, min_moves=30, max_moves=60)
+
+# decisive miniatures won by the player (combine the SQL filter with a Python check)
+wins = [
+    r for r in cb.iter_player_games(con, CARLSEN, max_moves=25)
+    if (r["WhiteID"] in CARLSEN and r["Result"] == "1-0")
+    or (r["BlackID"] in CARLSEN and r["Result"] == "0-1")
+]
+with open("carlsen_won_miniatures.pgn", "w") as f:
+    for r in wins:
+        f.write(cb.row_to_pgn(r, rename) + "\n\n")
+
+# filtered game counts per identity
+for p in cb.find_players(con, "Carlsen, Ma%", min_moves=20):
+    print(p.id, p.name, p.games)
+```
+
+**Raw SQL**
+
+```sql
+-- games of both Carlsen identities with 30–60 full moves (3933 rows)
+SELECT ID, Date, Result, (PlyCount + 1) / 2 AS moves
+FROM Games
+WHERE (WhiteID IN (73583, 2876) OR BlackID IN (73583, 2876))
+  AND PlyCount BETWEEN 2*30 - 1 AND 2*60;
+
+-- game-length distribution, in 10-move buckets
+SELECT (PlyCount + 1) / 2 / 10 * 10 AS moves_from, COUNT(*) AS games
+FROM Games
+WHERE WhiteID IN (73583, 2876) OR BlackID IN (73583, 2876)
+GROUP BY moves_from ORDER BY moves_from;
+--  0|44   10|116   20|672   30|1411   40|1447   50|987   60|613   70|266   80|137   90|59 ...
+
+-- the longest games in the whole database
+SELECT ID, Date, (PlyCount + 1) / 2 AS moves FROM Games ORDER BY PlyCount DESC LIMIT 10;
 ```
 
 ---
