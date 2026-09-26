@@ -12,6 +12,9 @@ queries their games, and writes standard PGN.
 For the full schema, the move encoding, data quirks and raw SQL recipes, see
 **[docs/CAISSABASE_DB.md](docs/CAISSABASE_DB.md)**.
 
+`pgndoctor.py` summarizes any PGN file and removes duplicate games, e.g. copies of one game stored under two spellings
+of a player's name. See [below](#cli-pgndoctorpy) and **[docs/PGNDOCTOR.md](docs/PGNDOCTOR.md)**.
+
 ## Setup
 
 ```bash
@@ -138,6 +141,71 @@ wins = [
 More examples, including raw SQL for length ranges and length distributions, are in
 [docs/CAISSABASE_DB.md § 5.6](docs/CAISSABASE_DB.md#56-filtering-by-game-length).
 
+## CLI: `pgndoctor.py`
+
+`pgndoctor.py` works on any `.pgn`, or a `.zip` of PGN files. It doesn't need the database.
+`--info` (the default) prints a summary of the file, and `--dedup` writes a copy without duplicate games.
+
+```bash
+# summary: games, players (with first-last year), date range and precision, results,
+# lengths, events, sites, ECO codes, self-play games and duplicates
+python pgndoctor.py -f lasker.pgn
+
+# the same as JSON, e.g. for an app
+python pgndoctor.py -f lasker.pgn --json > lasker.json
+
+# list every duplicate instead of the first 20
+python pgndoctor.py -f lasker.pgn --list 0
+
+# remove exact duplicates                                        -> lasker.dedup.pgn
+python pgndoctor.py -f lasker.pgn --dedup
+
+# remove probable duplicates too (review them in the summary first)
+python pgndoctor.py -f lasker.pgn --dedup --dedup-probable -o lasker_clean.pgn
+
+# a zip of PGNs, stricter probable matching, summary and cleaned file in one pass
+python pgndoctor.py -f games.zip --info --dedup --similarity 0.7
+```
+
+A typical workflow: export several spellings of one player, then clean the result.
+
+```bash
+python export_pgn.py --search "Lasker,%" --min-moves 15
+#   297878     780 games  Lasker, E.
+#   316247     409 games  Lasker, Emanuel
+#   ...
+python export_pgn.py --ids 316247,297878 --merge --min-moves 15 -o lasker.pgn       # 1187 games
+python pgndoctor.py -f lasker.pgn
+# Duplicates:             30 exact, 33 probable (similarity >= 0.5)
+#   --dedup keeps:        1157 games (1124 with --dedup-probable)
+python pgndoctor.py -f lasker.pgn --dedup
+# Removed 30 duplicates (30 exact); kept 33 probable duplicates
+# Wrote 1157 of 1187 games: lasker.dedup.pgn
+```
+
+| Option | Meaning |
+|---|---|
+| `-f FILE` | input `.pgn` or `.zip` (required) |
+| `--info` | print the summary (default when `--dedup` isn't given) |
+| `--json` | print the summary as JSON |
+| `--dedup` | write the file without exact duplicates. The first copy of each game is kept |
+| `--dedup-probable` | with `--dedup`, also remove probable duplicates |
+| `-o FILE` | output of `--dedup` (default `<input>.dedup.pgn`) |
+| `--similarity X` | threshold for probable duplicates, 0–1 (default 0.5) |
+| `--min-plies N` | games shorter than N plies only match if players and date also match (default 6; `0` = moves only) |
+| `--list N` / `--top N` | entries per duplicate listing (default 20, `0` = all) / per top list (default 10) |
+
+**Exact duplicates** have the same start position and the same moves, whatever their headers say.
+So copies with a different date precision, event spelling, round or player spelling are still caught.
+
+**Probable duplicates** are copies whose moves differ, e.g. from a transcription error or two swapped moves. They
+share the players, year and result, and at least half of their positions. They are only listed unless you add
+`--dedup-probable`.
+
+The cleaned file contains each kept game exactly as it was in the input: comments, variations and formatting are
+unchanged. The input file is never modified. See [docs/PGNDOCTOR.md](docs/PGNDOCTOR.md) for the full reference,
+the detection rules and the architecture.
+
 ## Python API: `caissabase.py`
 
 ```python
@@ -188,7 +256,10 @@ opening statistics, Elo filters and endgame search. See section 5.4 of
 
 - **One player can have several spellings**, e.g. `Carlsen, Magnus` and `Carlsen, M`. Use `--search`, then
   `--name`/`--id` with `--merge`. Short spellings can also belong to other people.
-- **The same game is sometimes stored under two spellings**, so a merged export can contain a few duplicates.
+- **The same game is sometimes stored under two spellings**, so a merged export can contain duplicates
+  (30 exact + 33 probable in the 1187-game Lasker export). Clean it with `pgndoctor.py --dedup`.
+- **A short spelling can mix several people.** `Lasker, E.` also contains Edward Lasker's games from 1946–1976.
+  The top-player year span in the `pgndoctor.py` summary makes this visible.
 - **Games contain only the moves actually played.** The database has no comments, variations or clock times.
 - **The source data wasn't cleaned**, so it contains the occasional wrong result or odd round value. See
   [docs/CAISSABASE_DB.md § 6](docs/CAISSABASE_DB.md#6-gotchas--data-quality).
@@ -198,7 +269,9 @@ opening statistics, Elo filters and endgame search. See section 5.4 of
 | File | Purpose |
 |---|---|
 | `export_pgn.py` | CLI exporter |
+| `pgndoctor.py` | CLI to summarize any PGN file and remove duplicate games |
 | `caissabase.py` | library: DB access, move decoder, PGN conversion |
 | `docs/CAISSABASE_DB.md` | database structure, move encoding, SQL and Python extraction examples |
+| `docs/PGNDOCTOR.md` | `pgndoctor.py` reference, duplicate detection and architecture |
 | `CLAUDE.md` | project notes for Claude Code |
 | `requirements.txt` | dependencies (`chess`) |

@@ -557,33 +557,15 @@ python pgndoctor.py -f lasker.pgn --dedup                # -> lasker.dedup.pgn
 python pgndoctor.py -f lasker.pgn --dedup --dedup-probable -o lasker_clean.pgn
 ```
 
-| Option | Meaning |
-|---|---|
-| `-f, --pgnfile FILE` | input `.pgn`, or `.zip` (every `.pgn` inside is read) |
-| `--info` | summary: games, parse errors, games without moves, custom FEN starts, self-play games (White = Black), date range, date precision, games per decade, results, length in plies, distinct players/events/sites/ECO codes, top lists (players with their first and last year) and duplicates. This is the default when `--dedup` isn't given |
-| `--json` | the `--info` summary as JSON |
-| `--dedup` | write the file without exact duplicates to `-o` (default `<input>.dedup.pgn`). The first copy is kept. Kept games are copied as they are in the input, including comments, variations and undecodable bytes, and the input file is never modified |
-| `--dedup-probable` | with `--dedup`, also remove probable duplicates |
-| `--similarity X` | minimum similarity for probable duplicates (default `0.5`) |
-| `--min-plies N` | games shorter than N plies (default 6) only count as duplicates if players and date also match; `0` compares moves only |
-| `--list N` / `--top N` | entries per duplicate/error listing (default 20, `0` = all) / per top list (default 10) |
+It detects two kinds of duplicate:
 
-Two kinds of duplicate are detected:
+- **Exact duplicates** have the same start position and mainline moves, whatever their headers say.
+- **Probable duplicates** have different move data but the same players, year and result, and a position-set
+  similarity of at least 0.5.
 
-- **Exact**: same start position and the same mainline moves. Headers are ignored, so copies with a different
-  date precision (`1925.11.25` / `1925.??.??`), event (`Zuerich` / `Zurich`), round or player spelling still match.
-- **Probable**: the move data differs, but the players (in either color order), year and result match, and
-  the two games share most of their positions. Similarity is the Jaccard index of the two games' position sets.
-  This also catches copies with two moves swapped early on, whose move lists differ from that point but whose
-  positions come back together. Games need at least 20 plies for this check. These are only listed, not removed,
-  unless you pass `--dedup-probable`.
-
-The 0.5 default was calibrated on `Lasker, Emanuel` + `Lasker, E.`. Copies of one game scored 0.52–0.98,
-and different games from the same match scored ≤ 0.41. That merged export (`--ids 316247,297878 --merge --min-moves 15`,
-1187 games) contains 30 exact and 33 probable duplicates: `--dedup` leaves 1157 games, and adding `--dedup-probable` leaves 1124.
-
-Games with parse errors (e.g. an illegal move) are listed and always kept unchanged. Their moves stop at the error,
-so comparing them could match a different game. Parsing takes about 2.5 ms per game.
+The merged Lasker export (`--ids 316247,297878 --merge --min-moves 15`, 1187 games) contains 30 exact and
+33 probable duplicates. `--dedup` leaves 1157 games, and adding `--dedup-probable` leaves 1124. For the options,
+the detection rules and their calibration, and the architecture, see **[PGNDOCTOR.md](PGNDOCTOR.md)**.
 
 The summary also shows data-quality problems. In the Lasker export, the top player's years are `1889-1976`,
 although Emanuel Lasker died in 1941: `Lasker, E.` also contains Edward Lasker's games (see section 6).
@@ -617,3 +599,4 @@ although Emanuel Lasker died in 1941: `Lasker, E.` also contains Edward Lasker's
 | `pgndoctor.py` | CLI to summarize any PGN file and remove duplicate games |
 | `requirements.txt` | `chess` (python-chess) |
 | `docs/CAISSABASE_DB.md` | This document |
+| `docs/PGNDOCTOR.md` | `pgndoctor.py` reference and architecture |

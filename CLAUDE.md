@@ -19,7 +19,8 @@ shakmaty's legal-move order. `caissabase.py` reproduces that order with python-c
   players, year and result, and have a position-set Jaccard index ≥ `--similarity`. They are only removed with `--dedup-probable`.
   Kept games are copied verbatim through a `readline()`-recording reader, so don't re-serialize them.
   Parsing follows the lightweight `BaseVisitor` pattern of `~/src/chess-stuff/game-anal-v1/pgntools/repertoire.py`.
-  Verify changes against the Lasker merge in docs section 5.7 (1187 → 30 exact / 33 probable).
+  `docs/PGNDOCTOR.md` has the full reference, the architecture and the verification checklist (section 8).
+  Verify changes against the Lasker merge: 1187 games → 30 exact / 33 probable duplicates.
 - `requirements.txt`: dependencies (`chess`).
 
 ## Environment
